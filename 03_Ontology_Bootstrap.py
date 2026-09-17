@@ -6,8 +6,14 @@
 # MAGIC 단계가 그대로 참조합니다.
 # MAGIC
 # MAGIC ⚠️ 이 노트북은 중간에 **사람 확인 체크포인트**가 있습니다 — 제안된 내용을 검토한 뒤 저장 셀을 실행하세요.
-# MAGIC (v1과 동일하게 이 체크포인트는 소프트 게이트입니다 — 이번 v2 변경 범위는 동의어 자동화와 %run 제거
-# MAGIC 두 가지이며, 이 체크포인트 자체를 하드 게이트로 바꾸는 건 포함하지 않았습니다.)
+# MAGIC (v1과 동일하게 이 체크포인트는 소프트 게이트입니다.)
+# MAGIC
+# MAGIC **설계 변경 이력**: 한때 프롬프트에 실제 문서(코아비스 인수금융 IM)에서 관찰된 구체적 실패 사례를
+# MAGIC few-shot으로 박아넣었던 적이 있습니다("PortfolioCompany 타입에 무관한 회사 19곳이 섞인 사례" 등).
+# MAGIC 효과는 있었지만, 이 파이프라인의 존재 이유(도메인 무관 범용성)와 맞지 않는 방식이라 제거했습니다 —
+# MAGIC 도메인이 바뀔 때마다 그 도메인에 맞는 새 예시를 또 하드코딩해야 한다면 재사용 가능한 구조가 아닙니다.
+# MAGIC 대신 아래 "타입 혼동 위험 자기 비판" 셀에서, 같은 문제(핵심 주제 대상과 비교·참조용 대상의 혼동)를
+# MAGIC **도메인과 무관하게 매번 같은 질문**으로 점검합니다.
 
 # COMMAND ----------
 
@@ -88,16 +94,6 @@ bootstrap_prompt = f"""당신은 문서에서 온톨로지 그래프 스키마�
 5. 이 발췌본에 실제 등장하는 근거가 있는 것만 제안 — 일반적으로 있을 법한 카테고리를 추측해서 채우지 말 것
 6. 각 엔티티 타입의 설명(description)에는 "이 거래/문서에 한정된 대상"인지 아닌지를 명확히 표시할 것
    (예: 비교/참조용으로만 언급되는 유사 회사·과거 사례와, 이 문서의 실제 당사자를 같은 타입으로 섞지 말 것)
-7. 아래는 다른 인수금융 문서에서 실제로 관찰된 실패 사례입니다 — 같은 실수를 반복하지 마세요:
-   > 어느 문서에서 "PortfolioCompany"라는 타입을 "스폰서(사모펀드)가 투자한 회사"로만 정의했더니, 문서 안의
-   > "Sponsor 트랙레코드 소개" 페이지에 나열된, **이번 거래와 무관한** 과거 투자 회사 19곳(호텔, 시멘트,
-   > 항공 케이터링 업체 등)까지 전부 이 타입 하나로 뭉쳐 들어갔고, 정작 **이번 거래의 실제 차주(대상회사)**와
-   > 구분이 안 됐습니다. 금융주선사(예: 증권사)도 같은 식으로 Sponsor/PortfolioCompany에 잘못 섞여 들어갔습니다.
-   > → 이를 막으려면: "이번 거래의 실제 당사자(예: 차주/대상회사, 실제 투자자, 금융주선사)"를 위한 타입과,
-   > "트랙레코드·비교자료용으로만 언급되는, 이번 거래와 무관한 회사"를 위한 타입을 **처음부터 서로 다른
-   > class_type으로 분리**해서 제안하고, 각 타입 설명에 그 구분을 명시적으로 적으세요. 이 문서에 실제로
-   > 그런 구분이 필요한 대상이 등장한다면(예: 이 거래의 당사자 vs 비교/참조용으로만 언급되는 회사) 반드시
-   > 별도 타입으로 나누세요.
 
 --- 문서 발췌본 ---
 {sample_text}
@@ -139,13 +135,91 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### ★ 사람 확인 체크포인트
-# MAGIC 아래 제안 내용을 검토하세요. 수정이 필요하면 이 셀 실행 후 `proposal["entity_types"]`/`proposal["predicates"]`를
-# MAGIC 직접 편집하는 셀을 추가한 뒤, 그다음 저장 셀을 실행하세요.
+# MAGIC ### 타입 혼동 위험 자기 비판 (domain-agnostic)
+# MAGIC 실측 중 반복적으로 관찰된 실패 패턴: "문서의 핵심 주제(실사·분석 대상)"와 "비교·배경·참조 목적으로만
+# MAGIC 언급되는 대상"이 한 타입 안에 섞여 제안되는 경우가 있었습니다(예: 인수금융 문서에서 실제 차주와,
+# MAGIC 스폰서의 과거 투자 사례 소개용 회사가 같은 타입으로 뭉뚱그려짐). 이 문제를 특정 도메인의 구체적 사례로
+# MAGIC 미리 예방하는 대신 — 그러면 도메인이 바뀔 때마다 새 사례를 또 하드코딩해야 하므로 — **매번 같은
+# MAGIC 추상적 질문으로 방금 나온 제안 자체를 LLM이 스스로 재검토**하게 합니다. 도메인과 무관하게 항상 동일한
+# MAGIC 프롬프트가 실행됩니다.
 # MAGIC
-# MAGIC 실측으로 확인된 흔한 실패 패턴: "이 거래의 당사자"와 "비교/참조용으로만 언급되는 다른 회사"가 같은 타입
-# MAGIC (예: PortfolioCompany, Sponsor)으로 뭉뚱그려 제안되는 경우가 있었습니다. 타입 설명에 "이 거래에 한정"
-# MAGIC 같은 제약이 없다면 이 단계에서 추가하는 걸 권장합니다.
+# MAGIC 자동으로 고치지는 않습니다(자기 일관성 검증과 동일한 정책) — 경고만 출력하고, 최종 판단은 아래 사람
+# MAGIC 확인 체크포인트에서 하도록 남겨둡니다.
+
+# COMMAND ----------
+
+critique_schema = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "type_conflation_critique",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "risky_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "class_type": {"type": "string"},
+                            "reasoning": {"type": "string"},
+                            "suggested_split": {"type": "string"}
+                        },
+                        "required": ["class_type", "reasoning"]
+                    }
+                }
+            },
+            "required": ["risky_types"]
+        },
+        "strict": True
+    }
+}
+
+entity_type_desc_for_critique = "\n".join(
+    f"- {e['class_type']}: {e['description']}" for e in proposal["entity_types"]
+)
+
+critique_prompt = f"""아래는 방금 제안된 온톨로지 엔티티 타입 목록입니다. 각 타입에 대해, 이 문서의 **핵심 주제
+(실사·분석 대상 그 자체)**와 **비교·배경·참조 목적으로만 언급되는 대상**이 한 타입 안에 섞여 들어갈 위험이
+있는지 검토하세요.
+
+# 판단 기준
+1. 타입 설명이 "이 문서/거래의 실제 당사자·핵심 대상"과 "그 외 비교·참조·배경 설명용으로만 언급되는 대상"을
+   명확히 구분하고 있지 않다면 위험이 있는 것으로 판단
+2. 타입 설명이 이미 충분히 구체적으로 범위를 한정하고 있다면(예: "이 문서의 실제 당사자에 한정") 위험 없음
+3. 애매하면 위험 있음으로 판단할 것 (놓치는 것보다 과하게 잡는 게 안전함)
+4. 위험이 있다고 판단한 타입에는, 어떻게 별도 타입으로 분리하면 좋을지 suggested_split에 제안할 것
+
+# 검토 대상 엔티티 타입
+{entity_type_desc_for_critique}
+
+위험이 있는 타입만 결과에 포함하세요. 없으면 빈 배열을 반환하세요."""
+
+critique_prompt_escaped = critique_prompt.replace("'", "''")
+critique_schema_escaped = json.dumps(critique_schema, ensure_ascii=False).replace("'", "''")
+
+critique_df = spark.sql(f"""
+    SELECT ai_query('databricks-claude-sonnet-4-6', '{critique_prompt_escaped}',
+                     responseFormat => '{critique_schema_escaped}') AS critique
+""")
+critique = json.loads(critique_df.collect()[0].critique)
+
+if critique["risky_types"]:
+    print(f"⚠️ 타입 혼동 위험이 있다고 판단된 타입 {len(critique['risky_types'])}개:")
+    for r in critique["risky_types"]:
+        print(f"  - {r['class_type']}: {r['reasoning']}")
+        if r.get("suggested_split"):
+            print(f"    → 제안: {r['suggested_split']}")
+    print("→ 아래 사람 확인 단계에서 필요하면 entity_types를 분리/수정하세요.")
+else:
+    print("✅ 타입 혼동 위험이 있다고 판단된 타입이 없습니다.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### ★ 사람 확인 체크포인트
+# MAGIC 아래 제안 내용과, 바로 위 자기 비판 결과를 함께 검토하세요. 수정이 필요하면 이 셀 실행 후
+# MAGIC `proposal["entity_types"]`/`proposal["predicates"]`를 직접 편집하는 셀을 추가한 뒤, 그다음 저장 셀을
+# MAGIC 실행하세요.
 
 # COMMAND ----------
 
