@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC ## 02_Parse_And_Chunk
 # MAGIC PDF 파싱 → 요소 추출(섹션 목록 확보용) → `ai_prep_search` 기반 청킹(방안 A) → 커버리지 감사
