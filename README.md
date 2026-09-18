@@ -11,7 +11,7 @@ PDF 원본 하나를 넣으면 다음이 자동 생성됩니다.
 - `relationships_resolved` — 정규화된 엣지 테이블 (`source_node_id`, `predicate`, `target_node_id`)
 - `ontology_predicate_combos` — 실제 데이터에서 관측된 `(source_type, predicate, target_type)` 조합 집계
 
-이 4개 테이블이 그래프 DB 적재(Neo4j, Neptune 등)나 Genie/AI·BI 같은 텍스트-투-쿼리 레이어의 바로 다음 입력이 됩니다.
+이 4개 테이블이 그래프 DB 적재(Neo4j, Neptune 등)나 Genie/AI·BI 같은 Text2SQL 레이어의 바로 다음 입력이 됩니다.
 
 ## 핵심 설계 포인트
 
