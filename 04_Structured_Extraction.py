@@ -6,6 +6,13 @@
 # MAGIC
 # MAGIC v2 변경점: `EXTRACTION_FIXED_RULES`를 (v1처럼 01_Config에서 물려받지 않고) 이 노트북에 직접 정의합니다 —
 # MAGIC 이 값을 쓰는 곳이 이 노트북뿐이라 굳이 다른 노트북과 공유할 이유가 없습니다.
+# MAGIC
+# MAGIC **타입 오염 완화(신규)**: 청크별 추출 직전에 `chunk_role`("core_narrative" vs "background_reference")을
+# MAGIC 같은 `ai_query` 호출 안에서 먼저 판단하게 하고, 03이 이미 만들어둔 `example_instances`를 앵커링 정보로
+# MAGIC 함께 제공합니다. 실측으로 확인된 오염 패턴(Sponsor 트랙레코드·대표이사 이력 등 배경 설명 청크에서 무관한
+# MAGIC 회사가 핵심 당사자 타입으로 섞여 들어가는 것)을 추출 시점에 줄이기 위한 예방 조치입니다 — 03의 자기비판이
+# MAGIC "스키마 설계가 잘 됐는가"만 검증했던 것과 달리, 이건 "이 청크에서 그 스키마를 실제로 잘 지켰는가"를
+# MAGIC 매 청크마다 다시 묻습니다. 도메인 어휘를 전혀 쓰지 않는 질문이라 다른 도메인에도 그대로 적용됩니다.
 
 # COMMAND ----------
 
@@ -44,16 +51,23 @@ EXTRACTION_FIXED_RULES = """
 import json
 from pyspark.sql.functions import expr, col, from_json
 
-class_types = [r.class_type for r in
-               spark.table(f"{catalog_name}.{schema_name}.ontology_entity_types").collect()]
+ontology_entity_types_rows = spark.table(f"{catalog_name}.{schema_name}.ontology_entity_types").collect()
+
+class_types = [r.class_type for r in ontology_entity_types_rows]
 predicates = [r.predicate for r in
               spark.table(f"{catalog_name}.{schema_name}.ontology_predicates").collect()]
 
 entity_type_desc = "\n".join(
     f"- {r.class_type}: {r.description}"
-    for r in spark.table(f"{catalog_name}.{schema_name}.ontology_entity_types").collect()
+    for r in ontology_entity_types_rows
 )
 predicate_list = ", ".join(predicates)
+
+# 03에서 이미 만들어둔 example_instances를 앵커링 정보로 재활용 (아래 chunk_role 판단에 사용)
+entity_type_examples = "\n".join(
+    f"- {r.class_type}: {', '.join(r.example_instances)}"
+    for r in ontology_entity_types_rows if r.example_instances
+)
 
 print(f"엔티티 타입 {len(class_types)}개, predicate {len(predicates)}개 로드 완료")
 
@@ -66,6 +80,7 @@ response_schema = {
         "schema": {
             "type": "object",
             "properties": {
+                "chunk_role": {"type": "string", "enum": ["core_narrative", "background_reference"]},
                 "entities": {"type": "array", "items": {
                     "type": "object",
                     "properties": {
@@ -84,7 +99,7 @@ response_schema = {
                         "attributes": {"type": "string"}
                     }, "required": ["source_name", "source_type", "predicate", "target_name", "target_type"]
                 }}
-            }, "required": ["entities", "relationships"]
+            }, "required": ["chunk_role", "entities", "relationships"]
         }, "strict": True
     }
 }
@@ -97,6 +112,19 @@ extraction_system_prompt = f"""당신은 '{document_domain_hint}' 문서에서 �
 # 추출 대상 관계 타입 (predicate, 아래 목록 외 타입 사용 금지)
 {predicate_list}
 
+# 확인된 각 타입의 대표 예시 (참고용 — 03단계에서 문서 전체를 보고 제시된 사례)
+{entity_type_examples if entity_type_examples else "(제공된 예시 없음)"}
+
+# chunk_role 판단 (텍스트 분석 전에 먼저 판단할 것)
+아래 텍스트가 다음 중 어디에 해당하는지 먼저 판단해 chunk_role에 기록하세요:
+- "core_narrative": 이 문서가 실제로 다루는 핵심 거래/주제 자체를 설명하는 내용
+- "background_reference": 당사자 소개·경력·이력·트랙레코드·비교참조 사례처럼, 핵심 거래와 직접 관련 없는 배경 설명
+
+chunk_role이 "background_reference"인 경우, 위 "확인된 예시"와 명백히 다른 새로운 이름을 그 예시가 속한
+타입(핵심 당사자를 가리키는 타입)으로 추출하려 할 때는 특히 신중하게 판단하세요 — 그 이름이 실제로 이
+문서의 핵심 당사자인지, 아니면 배경 설명에만 등장하는 별개 대상인지 텍스트 문맥으로 다시 확인하고, 확신이
+없으면 추출하지 마세요.
+
 # 규칙
 {EXTRACTION_FIXED_RULES}
 
@@ -105,7 +133,7 @@ JSON 형식으로만 응답하고, 다른 설명은 추가하지 않는다."""
 system_prompt_escaped = extraction_system_prompt.replace("'", "''")
 response_format_escaped = json.dumps(response_schema, ensure_ascii=False).replace("'", "''")
 
-PARSED_SCHEMA = ("STRUCT<entities: ARRAY<STRUCT<name:STRING, class_type:STRING>>, "
+PARSED_SCHEMA = ("STRUCT<chunk_role:STRING, entities: ARRAY<STRUCT<name:STRING, class_type:STRING>>, "
                   "relationships: ARRAY<STRUCT<source_name:STRING, source_type:STRING, predicate:STRING, "
                   "target_name:STRING, target_type:STRING, attributes:STRING>>>")
 
@@ -128,11 +156,13 @@ raw_extraction_df = (
     .withColumn("parsed", from_json(col("ai_response").getField("result"), PARSED_SCHEMA))
 )
 raw_extraction_df.select(*EXTRACTION_COLUMNS) \
-    .write.mode("overwrite").saveAsTable(f"{catalog_name}.{schema_name}.parsed_extractions")
+    .write.mode("overwrite").option("overwriteSchema", "true") \
+    .saveAsTable(f"{catalog_name}.{schema_name}.parsed_extractions")
 
 display(
     spark.table(f"{catalog_name}.{schema_name}.parsed_extractions")
-    .select("chunk_id", "chunk_position", "ai_response.errorMessage", "parsed.entities", "parsed.relationships")
+    .select("chunk_id", "chunk_position", "ai_response.errorMessage", "parsed.chunk_role",
+            "parsed.entities", "parsed.relationships")
 )
 
 # COMMAND ----------
@@ -174,7 +204,8 @@ if retry_count > 0:
 
     # 1) 임시 테이블에 먼저 저장
     retry_result.select(*EXTRACTION_COLUMNS) \
-        .write.mode("overwrite").saveAsTable(f"{catalog_name}.{schema_name}._retry_parsed_tmp")
+        .write.mode("overwrite").option("overwriteSchema", "true") \
+        .saveAsTable(f"{catalog_name}.{schema_name}._retry_parsed_tmp")
 
     # 2) 검증
     still_null = spark.sql(f"""
